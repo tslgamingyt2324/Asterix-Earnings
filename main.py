@@ -1,22 +1,14 @@
 import logging
-import os
-import asyncio
 from datetime import datetime
-from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from apscheduler.schedulers.background import BackgroundScheduler
 
 from config import Config
 from database import Database
 
-# Initialize Flask app
-app = Flask(__name__)
-
 # Initialize database
 db = Database()
 
-# Set up logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -26,26 +18,16 @@ logger = logging.getLogger(__name__)
 class AsterixEarningsBot:
     def __init__(self):
         self.application = Application.builder().token(Config.BOT_TOKEN).build()
-        self.scheduler = BackgroundScheduler()
         self.user_ad_sessions = {}
         self.setup_handlers()
-        self.setup_scheduler()
-    
-    def setup_scheduler(self):
-        self.scheduler.add_job(self.cleanup_expired_sessions, 'interval', minutes=5)
-        self.scheduler.start()
     
     def setup_handlers(self):
-        # Command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("balance", self.balance_command))
         self.application.add_handler(CommandHandler("withdraw", self.withdraw_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         
-        # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
-        
-        # Callback query handlers
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -57,28 +39,24 @@ class AsterixEarningsBot:
             'phone_number': None
         }
         
-        db_user = db.create_user(user_data)
+        db.create_user(user_data)
         
         welcome_text = f"""
 🤖 *Welcome to Asterix Earnings Bot* 💰
 
 *Hi {user.first_name}!* 👋
 
-Earn real money by watching simple ads! Here's how it works:
+Earn money by watching ads!
 
 📱 *Features:*
 • Watch ads and earn $0.02 per ad
 • Minimum withdrawal: ${Config.MIN_WITHDRAWAL}
 • Multiple payment methods
-• Real-time balance tracking
 
 ⚡ *Quick Start:*
 1. Click *'📺 Watch Ads'* to start earning
 2. Open the ad link and wait 30 seconds
 3. Get paid automatically!
-4. Withdraw when you reach ${Config.MIN_WITHDRAWAL}
-
-📞 *Support:* Contact admin for help
         """
         
         keyboard = [
@@ -87,11 +65,7 @@ Earn real money by watching simple ads! Here's how it works:
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
-        await update.message.reply_text(
-            welcome_text,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
     
     async def balance_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = db.get_user(update.effective_user.id)
@@ -126,21 +100,17 @@ Earn real money by watching simple ads! Here's how it works:
         ad_message = f"""
 🎬 *Watch Ad & Earn ${Config.EARN_PER_AD}*
 
-💰 *Earning Per Ad:* `${Config.EARN_PER_AD}`
-⏰ *Required Time:* `{Config.AD_DURATION} seconds`
+💰 *Earning:* `${Config.EARN_PER_AD}`
+⏰ *Time:* `{Config.AD_DURATION} seconds`
 
 📋 *Instructions:*
-1. Click [👉 Click Here 👈]({Config.AD_LINK}) below to open the ad
-2. Wait for *{Config.AD_DURATION} seconds* on the ad page
-3. Do NOT close the ad window early
-4. Return here and click *'✅ I Completed Watching'*
+1. Click the button below to open ad
+2. Wait for {Config.AD_DURATION} seconds
+3. Return and click *'✅ I Completed Watching'*
 
-⚠️ *Important Rules:*
-• You must stay on the ad page for full {Config.AD_DURATION} seconds
-• Payment is automatic after verification
-• Any cheating will result in permanent ban
-
-Click the button below to open the ad link:
+⚠️ *Rules:*
+• Stay on ad for full {Config.AD_DURATION} seconds
+• Payment is automatic
         """
         
         keyboard = [
@@ -150,17 +120,11 @@ Click the button below to open the ad link:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message = await update.message.reply_text(
-            ad_message,
-            reply_markup=reply_markup,
-            parse_mode='Markdown',
-            disable_web_page_preview=False
-        )
+        message = await update.message.reply_text(ad_message, reply_markup=reply_markup, parse_mode='Markdown')
         
         self.user_ad_sessions[user_id] = {
             'message_id': message.message_id,
-            'start_time': datetime.now(),
-            'completed': False
+            'start_time': datetime.now()
         }
     
     async def withdraw_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,66 +135,40 @@ Click the button below to open the ad link:
             return
         
         if user.balance < Config.MIN_WITHDRAWAL:
-            await update.message.reply_text(
-                f"❌ *Withdrawal Failed*\n\n"
-                f"Your balance (${user.balance:.2f}) is below the minimum withdrawal amount (${Config.MIN_WITHDRAWAL}).\n\n"
-                f"💡 Watch more ads to reach the minimum amount!",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text(f"❌ Minimum withdrawal is ${Config.MIN_WITHDRAWAL}. Your balance: ${user.balance:.2f}")
             return
         
         keyboard = []
         for method in Config.PAYMENT_METHODS:
             keyboard.append([InlineKeyboardButton(f"📱 {method.upper()}", callback_data=f"withdraw_{method}")])
-        
         keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_withdraw")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            f"💳 *Withdrawal Request*\n\n"
-            f"💰 *Available Balance:* `${user.balance:.2f}`\n"
-            f"📋 *Minimum Withdrawal:* `${Config.MIN_WITHDRAWAL}`\n\n"
-            f"Please choose your withdrawal method:",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
+            f"💳 *Withdrawal Request*\n💰 Balance: ${user.balance:.2f}\nChoose method:",
+            reply_markup=reply_markup, parse_mode='Markdown'
         )
     
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = """
-📋 *Asterix Earnings - Instructions*
+📋 *Instructions*
 
-🎯 *How to Earn Money:*
-1. Click *'📺 Watch Ads'* button
-2. Click *'👉 Click Here 👈'* to open ad link
-3. Wait on the ad page for *30 seconds*
-4. Return and click *'✅ I Completed Watching'*
-5. Get *$0.02* automatically credited
+🎯 *How to Earn:*
+1. Click *'📺 Watch Ads'*
+2. Click *'👉 Click Here 👈'*
+3. Wait 30 seconds on ad page
+4. Click *'✅ I Completed Watching'*
+5. Get *$0.02* automatically
 
-💰 *Withdrawal Information:*
-- *Minimum:* $1.00
-- *Methods:* bKash, Nagad, Rocket, PayPal
-- *Processing:* 24-48 hours
-- *Fees:* No hidden fees
-
-📊 *Balance & Statistics:*
-- Check your balance anytime
-- Track total earnings
-- See ads watched count
-
-⚠️ *Important Rules:*
-- One account per person only
-- No cheating or automation
-- Must watch ads completely
-- Be patient with withdrawals
-
-📞 *Support:* Contact admin for any issues
+💰 *Withdrawal:*
+- Minimum: $1.00
+- Methods: bKash, Nagad, Rocket, PayPal
         """
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
-        user_id = update.effective_user.id
         
         if text == "💰 Balance":
             await self.balance_command(update, context)
@@ -241,18 +179,11 @@ Click the button below to open the ad link:
         elif text == "📋 Instructions":
             await self.help_command(update, context)
         else:
-            await update.message.reply_text(
-                "Please use the menu buttons below or type /help for instructions.",
-                reply_markup=ReplyKeyboardMarkup([
-                    [KeyboardButton("💰 Balance"), KeyboardButton("📺 Watch Ads")],
-                    [KeyboardButton("💳 Withdraw"), KeyboardButton("📋 Instructions")]
-                ], resize_keyboard=True)
-            )
+            await update.message.reply_text("Please use the menu buttons or /help")
     
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        user_id = query.from_user.id
         data = query.data
         
         if data == "confirm_ad":
@@ -263,122 +194,44 @@ Click the button below to open the ad link:
             method = data.replace("withdraw_", "")
             await self.handle_withdrawal_method(query, context, method)
         elif data == "cancel_withdraw":
-            await query.edit_message_text("❌ Withdrawal request cancelled.")
+            await query.edit_message_text("❌ Withdrawal cancelled.")
     
     async def confirm_ad_watching(self, query, context):
         user_id = query.from_user.id
         user = db.get_user(user_id)
         
-        if not user:
-            await query.edit_message_text("❌ User not found. Please use /start first.")
-            return
-        
-        if not user.is_watching_ad:
-            await query.answer("❌ You haven't started watching an ad yet!", show_alert=True)
+        if not user or not user.is_watching_ad:
+            await query.answer("❌ Start watching an ad first!", show_alert=True)
             return
         
         user = db.update_user_balance(user_id, Config.EARN_PER_AD)
         
         if user:
             success_text = f"""
-✅ *Payment Credited Successfully!* 🎉
+✅ *Payment Credited!* 🎉
 
 💰 *Earned:* `${Config.EARN_PER_AD}`
 📊 *New Balance:* `${user.balance:.2f}`
-🏆 *Total Ads Watched:* `{user.ads_watched}`
-🎯 *Total Earnings:* `${user.total_earned:.2f}`
+🏆 *Total Ads:* `{user.ads_watched}`
 
-💡 Keep watching more ads to increase your earnings!
-💳 Withdraw anytime when you reach ${Config.MIN_WITHDRAWAL}
+Keep watching to earn more!
             """
             
             if user_id in self.user_ad_sessions:
                 del self.user_ad_sessions[user_id]
             
-            await query.edit_message_text(
-                success_text,
-                parse_mode='Markdown'
-            )
-        else:
-            await query.edit_message_text("❌ Error processing payment. Please try again.")
+            await query.edit_message_text(success_text, parse_mode='Markdown')
     
     async def handle_withdrawal_method(self, query, context, method):
         user = db.get_user(query.from_user.id)
-        
-        instruction_text = f"""
-💳 *Withdrawal - {method.upper()}*
-
-💰 *Your Balance:* `${user.balance:.2f}`
-📱 *Payment Method:* {method.upper()}
-
-To process your withdrawal, please send:
-`/{method} [your_account_number] [amount]`
-
-*Example:*
-`/{method} 01XXXXXX {user.balance:.2f}`
-
-📋 *Requirements:*
-• Minimum: ${Config.MIN_WITHDRAWAL}
-• Account must be in your name
-• Processing time: 24-48 hours
-
-⚠️ *Note:* Replace with your actual {method.upper()} account number
-        """
-        
-        await query.edit_message_text(
-            instruction_text,
-            parse_mode='Markdown'
-        )
+        await query.edit_message_text(f"💳 Withdrawal via {method.upper()}\nSend: /{method} YOUR_ACCOUNT_NUMBER")
     
     async def cancel_ad_watching(self, query, context):
         user_id = query.from_user.id
         db.set_watching_ad(user_id, False)
-        
         if user_id in self.user_ad_sessions:
             del self.user_ad_sessions[user_id]
-        
-        await query.edit_message_text("❌ Ad watching session cancelled.")
-    
-    def cleanup_expired_sessions(self):
-        """Clean up expired ad sessions"""
-        current_time = datetime.now()
-        expired_sessions = []
-        
-        for user_id, session in self.user_ad_sessions.items():
-            if (current_time - session['start_time']).total_seconds() > 600:  # 10 minutes
-                expired_sessions.append(user_id)
-        
-        for user_id in expired_sessions:
-            db.set_watching_ad(user_id, False)
-            del self.user_ad_sessions[user_id]
+        await query.edit_message_text("❌ Ad watching cancelled.")
 
-# Initialize bot
+# Create bot instance
 bot = AsterixEarningsBot()
-
-# Webhook routes for Render
-@app.route('/')
-def index():
-    return "🤖 Asterix Earnings Bot is running!"
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(), bot.application.bot)
-    asyncio.run(bot.application.process_update(update))
-    return 'ok'
-
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    webhook_url = f"{Config.WEBHOOK_URL}/webhook"
-    result = bot.application.bot.set_webhook(webhook_url)
-    if result:
-        return f"Webhook set to {webhook_url}"
-    else:
-        return "Webhook setup failed"
-
-if __name__ == '__main__':
-    # Set webhook on startup
-    webhook_url = f"{Config.WEBHOOK_URL}/webhook"
-    bot.application.bot.set_webhook(webhook_url)
-    
-    # Start Flask app
-    app.run(host='0.0.0.0', port=Config.PORT)
