@@ -18,9 +18,6 @@ class User(Base):
     is_watching_ad = Column(Boolean, default=False)
     ad_start_time = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
-    def can_withdraw(self, amount):
-        return self.balance >= amount
 
 class Withdrawal(Base):
     __tablename__ = 'withdrawals'
