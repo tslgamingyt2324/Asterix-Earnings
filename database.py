@@ -2,6 +2,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from models import Base, User, Withdrawal
 from config import Config
+from datetime import datetime
 
 class Database:
     def __init__(self):
@@ -15,8 +16,7 @@ class Database:
     def get_user(self, user_id):
         session = self.get_session()
         try:
-            user = session.query(User).filter_by(user_id=user_id).first()
-            return user
+            return session.query(User).filter_by(user_id=user_id).first()
         finally:
             session.close()
     
@@ -46,16 +46,6 @@ class Database:
                 user.ad_start_time = None
                 session.commit()
             return user
-        finally:
-            session.close()
-    
-    def create_withdrawal(self, withdrawal_data):
-        session = self.get_session()
-        try:
-            withdrawal = Withdrawal(**withdrawal_data)
-            session.add(withdrawal)
-            session.commit()
-            return withdrawal
         finally:
             session.close()
     
