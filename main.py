@@ -1,13 +1,17 @@
 import logging
+import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
+from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import sqlalchemy
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from config import Config
 from database import Database
+
+# Initialize Flask app
+app = Flask(__name__)
 
 # Initialize database
 db = Database()
@@ -22,13 +26,14 @@ logger = logging.getLogger(__name__)
 class AsterixEarningsBot:
     def __init__(self):
         self.application = Application.builder().token(Config.BOT_TOKEN).build()
-        self.scheduler = AsyncIOScheduler()
+        self.scheduler = BackgroundScheduler()
         self.user_ad_sessions = {}
         self.setup_handlers()
         self.setup_scheduler()
     
     def setup_scheduler(self):
         self.scheduler.add_job(self.cleanup_expired_sessions, 'interval', minutes=5)
+        self.scheduler.start()
     
     def setup_handlers(self):
         # Command handlers
@@ -52,7 +57,6 @@ class AsterixEarningsBot:
             'phone_number': None
         }
         
-        # Create or get user
         db_user = db.create_user(user_data)
         
         welcome_text = f"""
@@ -117,7 +121,6 @@ Earn real money by watching simple ads! Here's how it works:
             await update.message.reply_text("⏳ You are already watching an ad. Please complete it first.")
             return
         
-        # Set user as watching ad
         db.set_watching_ad(user_id, True)
         
         ad_message = f"""
@@ -154,7 +157,6 @@ Click the button below to open the ad link:
             disable_web_page_preview=False
         )
         
-        # Store the session
         self.user_ad_sessions[user_id] = {
             'message_id': message.message_id,
             'start_time': datetime.now(),
@@ -271,12 +273,10 @@ Click the button below to open the ad link:
             await query.edit_message_text("❌ User not found. Please use /start first.")
             return
         
-        # Check if user was actually watching an ad
         if not user.is_watching_ad:
             await query.answer("❌ You haven't started watching an ad yet!", show_alert=True)
             return
         
-        # Credit the user
         user = db.update_user_balance(user_id, Config.EARN_PER_AD)
         
         if user:
@@ -292,7 +292,6 @@ Click the button below to open the ad link:
 💳 Withdraw anytime when you reach ${Config.MIN_WITHDRAWAL}
             """
             
-            # Clear the session
             if user_id in self.user_ad_sessions:
                 del self.user_ad_sessions[user_id]
             
@@ -302,15 +301,6 @@ Click the button below to open the ad link:
             )
         else:
             await query.edit_message_text("❌ Error processing payment. Please try again.")
-    
-    async def cancel_ad_watching(self, query, context):
-        user_id = query.from_user.id
-        db.set_watching_ad(user_id, False)
-        
-        if user_id in self.user_ad_sessions:
-            del self.user_ad_sessions[user_id]
-        
-        await query.edit_message_text("❌ Ad watching session cancelled.")
     
     async def handle_withdrawal_method(self, query, context, method):
         user = db.get_user(query.from_user.id)
@@ -340,7 +330,16 @@ To process your withdrawal, please send:
             parse_mode='Markdown'
         )
     
-    async def cleanup_expired_sessions(self):
+    async def cancel_ad_watching(self, query, context):
+        user_id = query.from_user.id
+        db.set_watching_ad(user_id, False)
+        
+        if user_id in self.user_ad_sessions:
+            del self.user_ad_sessions[user_id]
+        
+        await query.edit_message_text("❌ Ad watching session cancelled.")
+    
+    def cleanup_expired_sessions(self):
         """Clean up expired ad sessions"""
         current_time = datetime.now()
         expired_sessions = []
@@ -352,23 +351,34 @@ To process your withdrawal, please send:
         for user_id in expired_sessions:
             db.set_watching_ad(user_id, False)
             del self.user_ad_sessions[user_id]
-    
-    def run(self):
-        """Start the bot"""
-        if not Config.BOT_TOKEN:
-            logger.error("❌ BOT_TOKEN not found in environment variables!")
-            return
-        
-        self.scheduler.start()
-        logger.info("🤖 Asterix Earnings Bot is starting...")
-        logger.info("💼 Database initialized")
-        logger.info("⏰ Scheduler started")
-        
-        try:
-            self.application.run_polling()
-        except Exception as e:
-            logger.error(f"❌ Bot crashed: {e}")
+
+# Initialize bot
+bot = AsterixEarningsBot()
+
+# Webhook routes for Render
+@app.route('/')
+def index():
+    return "🤖 Asterix Earnings Bot is running!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(), bot.application.bot)
+    asyncio.run(bot.application.process_update(update))
+    return 'ok'
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    webhook_url = f"{Config.WEBHOOK_URL}/webhook"
+    result = bot.application.bot.set_webhook(webhook_url)
+    if result:
+        return f"Webhook set to {webhook_url}"
+    else:
+        return "Webhook setup failed"
 
 if __name__ == '__main__':
-    bot = AsterixEarningsBot()
-    bot.run()
+    # Set webhook on startup
+    webhook_url = f"{Config.WEBHOOK_URL}/webhook"
+    bot.application.bot.set_webhook(webhook_url)
+    
+    # Start Flask app
+    app.run(host='0.0.0.0', port=Config.PORT)
